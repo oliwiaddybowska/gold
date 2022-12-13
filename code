@@ -1,0 +1,332 @@
+# GOLD
+
+library(xts)
+library(quantmod)
+
+# load gold data
+library(readxl)
+
+gold <- read_excel("gold_investing.xlsx", 
+                   col_types = c("date","numeric"))
+head(gold)
+str(gold)
+
+# set as xtc
+library(dplyr)
+library(forecast) 
+gold.xtc <- xts(gold$Price, 
+                order.by = gold$Date, 
+                frequency = 7*4*12)
+
+View(gold.xtc)
+
+# prepare training and test data
+logprices <- log(gold.xtc)
+logreturns <- diff(logprices)[-1]
+T <- nrow(logreturns)
+T_trn <- round(0.7*T)
+T_tst <- T - T_trn
+logreturns_trn <- logreturns[1:T_trn]
+logreturns_tst <- logreturns[-c(1:T_trn)]
+
+# plot
+{ plot(logreturns, main = "Returns", lwd = 1.5)
+  addEventLines(xts("training", index(logreturns[T_trn])), srt=90, pos=2, lwd = 2, col = "blue") }
+
+library(rugarch)
+
+# fit i.i.d. model
+iid_spec <- arfimaspec(mean.model = list(armaOrder = c(0,0), include.mean = TRUE))
+iid_fit <- arfimafit(spec = iid_spec, data = logreturns, out.sample = T_tst)
+coef(iid_fit)
+# mu         sigma 
+# -8.612586e-05  9.231446e-03
+mean(logreturns_trn)
+#  -8.612125e-05
+sd(logreturns_trn)
+# 0.009233998
+
+# fit AR(1) model
+ar_spec <- arfimaspec(mean.model = list(armaOrder = c(1,0), include.mean = TRUE))
+ar_fit <- arfimafit(spec = ar_spec, data = logreturns, out.sample = T_tst)
+coef(ar_fit)
+# mu           ar1         sigma 
+# -8.582349e-05 -4.189424e-02  9.222348e-03 
+
+# fit ARMA(2,2) model
+arma_spec <- arfimaspec(mean.model = list(armaOrder = c(2,2), include.mean = TRUE))
+arma_fit <- arfimafit(spec = arma_spec, data = logreturns, out.sample = T_tst)
+coef(arma_fit)
+# mu           ar1           ar2           ma1           ma2 
+# -8.558352e-05 -7.419525e-01 -7.853099e-01  7.010925e-01  7.562709e-01 
+# sigma 
+# 9.209269e-03 
+
+# fit ARMA(1,1) + ARCH(1) model
+arch_spec <- ugarchspec(mean.model = list(armaOrder = c(1,1), include.mean = TRUE), 
+                        variance.model = list(model = "sGARCH", garchOrder = c(1,0)))
+arch_fit <- ugarchfit(spec = arch_spec, data = logreturns, out.sample = T_tst, solver = "hybrid")
+coef(arch_fit)
+# mu           ar1           ma1         omega        alpha1 
+# -2.829840e-05  3.772746e-02 -7.055091e-02  7.828953e-05  6.579423e-02 
+
+# fit ARMA(0,0) + ARCH(10) model
+long_arch_spec <- ugarchspec(mean.model = list(armaOrder = c(0,0), include.mean = TRUE), 
+                             variance.model = list(model = "sGARCH", garchOrder = c(10,0)))
+long_arch_fit <- ugarchfit(spec = long_arch_spec, data = logreturns, out.sample = T_tst)
+coef(long_arch_fit)
+# mu        omega       alpha1       alpha2       alpha3 
+# 1.408347e-04 4.305620e-05 2.069065e-02 1.473255e-02 1.902872e-01 
+# alpha4       alpha5       alpha6       alpha7       alpha8 
+# 2.552116e-02 8.066695e-02 1.312797e-02 7.617688e-03 7.794030e-02 
+# alpha9      alpha10 
+# 9.867139e-02 7.679147e-05 
+
+# fit ARMA(1,1) + GARCH(1,1) model
+garch_spec <- ugarchspec(mean.model = list(armaOrder = c(1,1), include.mean = TRUE), 
+                         variance.model = list(model = "sGARCH", garchOrder = c(1,1)))
+garch_fit <- ugarchfit(spec = garch_spec, data = logreturns, out.sample = T_tst)
+coef(garch_fit)
+# mu           ar1           ma1         omega        alpha1 
+# 4.370585e-06 -3.120064e-02  6.596091e-03  5.509752e-07  2.750998e-02 
+# beta1 
+# 9.664281e-01 
+
+# prepare to forecast log-returns along the out-of-sample period
+dates_out_of_sample <- tail(index(logreturns), T_tst)
+
+# forecast with i.i.d. model
+iid_fore_logreturns <- xts(arfimaforecast(iid_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ], 
+                           dates_out_of_sample)
+
+# forecast with AR(1) model
+ar_fore_logreturns <- xts(arfimaforecast(ar_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ], 
+                          dates_out_of_sample)
+
+# forecast with ARMA(2,2) model
+arma_fore_logreturns <- xts(arfimaforecast(arma_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ], 
+                            dates_out_of_sample)
+
+# forecast with ARMA(1,1) + ARCH(1) model
+arch_fore_logreturns <- xts(ugarchforecast(arch_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ], 
+                            dates_out_of_sample)
+
+# forecast with ARMA(0,0) + ARCH(10) model
+long_arch_fore_logreturns <- xts(ugarchforecast(long_arch_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ], 
+                                 dates_out_of_sample)
+
+# forecast with ARMA(1,1) + GARCH(1,1) model
+garch_fore_logreturns <- xts(ugarchforecast(garch_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ], 
+                             dates_out_of_sample)
+
+error_var <- rbind("iid"                    = c(var(logreturns - fitted(iid_fit)),
+                                                var(logreturns - iid_fore_logreturns)),
+                   "AR(1)"                  = c(var(logreturns - fitted(ar_fit)),
+                                                var(logreturns - ar_fore_logreturns)),
+                   "ARMA(2,2)"              = c(var(logreturns - fitted(arma_fit)),
+                                                var(logreturns - arma_fore_logreturns)),
+                   "ARMA(1,1) + ARCH(1)"    = c(var(logreturns - fitted(arch_fit)),
+                                                var(logreturns - arch_fore_logreturns)),
+                   "ARCH(10)"               = c(var(logreturns - fitted(long_arch_fit)),
+                                                var(logreturns - long_arch_fore_logreturns)),
+                   "ARMA(1,1) + GARCH(1,1)" = c(var(logreturns - fitted(garch_fit)),
+                                                var(logreturns - garch_fore_logreturns)))
+colnames(error_var) <- c("in-sample", "out-of-sample")
+print(error_var)
+#                           in-sample out-of-sample
+# iid                    8.526672e-05  0.0001183718
+# AR(1)                  8.511666e-05  0.0001184781
+# ARMA(2,2)              8.485804e-05  0.0001187465
+# ARMA(1,1) + ARCH(1)    8.512371e-05  0.0001184255
+# ARCH(10)               8.526672e-05  0.0001183718
+# ARMA(1,1) + GARCH(1,1) 8.514240e-05  0.0001183836
+
+error_logreturns <- cbind(logreturns - garch_fore_logreturns,
+                          logreturns - long_arch_fore_logreturns,
+                          logreturns - arch_fore_logreturns,
+                          logreturns - arma_fore_logreturns,
+                          logreturns - ar_fore_logreturns,
+                          logreturns - iid_fore_logreturns)
+names(error_logreturns) <- c("GARCH", "long-ARCH", "ARCH", "ARMA", "AR", "i.i.d.")
+plot(error_logreturns, col = c("red", "green", "magenta", "purple", "blue", "black"), lwd = c(1, 1, 1, 1, 1, 2),
+     main = "Out-of-sample error of static return forecast for different models", legend.loc = "bottomleft")
+
+# model specification of an ARMA(2,2)
+spec <- arfimaspec(mean.model = list(armaOrder = c(2,2), include.mean = TRUE))
+
+# static fit and forecast
+ar_static_fit <- arfimafit(spec = spec, data = logreturns, out.sample = T_tst)
+ar_static_fore_logreturns <- xts(arfimaforecast(ar_static_fit, n.ahead = 1, n.roll = T_tst - 1)@forecast$seriesFor[1, ],
+                                 dates_out_of_sample)
+
+# rolling fit and forecast
+modelroll <- arfimaroll(spec = spec, data = logreturns, n.ahead = 1, 
+                        forecast.length = T_tst, refit.every = 50, refit.window = "moving")
+ar_rolling_fore_logreturns <- xts(modelroll@forecast$density$Mu, dates_out_of_sample)
+
+# plot of forecast
+plot(cbind("static forecast"  = ar_static_fore_logreturns,
+           "rolling forecast" = ar_rolling_fore_logreturns),
+     col = c("black", "red"), lwd = 2,
+     main = "Forecast with ARMA(2,2) model", legend.loc = "topleft")
+
+# plot of forecast error
+error_logreturns <- cbind(logreturns - ar_static_fore_logreturns,
+                          logreturns - ar_rolling_fore_logreturns)
+names(error_logreturns) <- c("rolling forecast", "static forecast")
+plot(error_logreturns, col = c("black", "red"), lwd = 2,
+     main = "Forecast error with ARMA(2,2) model", legend.loc = "topleft")
+
+
+# rolling forecast with i.i.d. model
+iid_rolling_fore_logreturns <- xts(arfimaroll(iid_spec, data = logreturns, n.ahead = 1, forecast.length = T_tst, 
+                                              refit.every = 50, refit.window = "moving")@forecast$density$Mu, 
+                                   dates_out_of_sample)
+
+# rolling forecast with AR(1) model
+ar_rolling_fore_logreturns <- xts(arfimaroll(ar_spec, data = logreturns, n.ahead = 1, forecast.length = T_tst, 
+                                             refit.every = 50, refit.window = "moving")@forecast$density$Mu, 
+                                  dates_out_of_sample)
+
+# rolling forecast with ARMA(2,2) model
+arma_rolling_fore_logreturns <- xts(arfimaroll(arma_spec, data = logreturns, n.ahead = 1, forecast.length = T_tst, 
+                                               refit.every = 50, refit.window = "moving")@forecast$density$Mu, 
+                                    dates_out_of_sample)
+
+# rolling forecast with ARMA(1,1) + ARCH(1) model
+arch_rolling_fore_logreturns <- xts(ugarchroll(arch_spec, data = logreturns, n.ahead = 1, forecast.length = T_tst, 
+                                               refit.every = 50, refit.window = "moving")@forecast$density$Mu, 
+                                    dates_out_of_sample)
+
+# rolling forecast with ARMA(0,0) + ARCH(10) model
+long_arch_rolling_fore_logreturns <- xts(ugarchroll(long_arch_spec, data = logreturns, n.ahead = 1, forecast.length = T_tst, 
+                                                    refit.every = 50, refit.window = "moving")@forecast$density$Mu, 
+                                         dates_out_of_sample)
+
+# rolling forecast with ARMA(1,1) + GARCH(1,1) model
+garch_rolling_fore_logreturns <- xts(ugarchroll(garch_spec, data = logreturns, n.ahead = 1, forecast.length = T_tst, 
+                                                refit.every = 50, refit.window = "moving")@forecast$density$Mu, 
+                                     dates_out_of_sample)
+
+rolling_error_var <- rbind(
+  "iid"                    = c(var(logreturns - fitted(iid_fit)),
+                               var(logreturns - iid_rolling_fore_logreturns)),
+  "AR(1)"                  = c(var(logreturns - fitted(ar_fit)),
+                               var(logreturns - ar_rolling_fore_logreturns)),
+  "ARMA(2,2)"              = c(var(logreturns - fitted(arma_fit)),
+                               var(logreturns - arma_rolling_fore_logreturns)),
+  "ARMA(1,1) + ARCH(1)"    = c(var(logreturns - fitted(arch_fit)),
+                               var(logreturns - arch_rolling_fore_logreturns)),
+  "ARCH(10)"               = c(var(logreturns - fitted(long_arch_fit)),
+                               var(logreturns - long_arch_rolling_fore_logreturns)),
+  "ARMA(1,1) + GARCH(1,1)" = c(var(logreturns - fitted(garch_fit)),
+                               var(logreturns - garch_rolling_fore_logreturns)))
+colnames(rolling_error_var) <- c("in-sample", "out-of-sample")
+print(rolling_error_var)
+#                           in-sample out-of-sample
+# iid                    8.526672e-05  0.0001185140
+# AR(1)                  8.511666e-05  0.0001186652
+# ARMA(2,2)              8.485804e-05  0.0001189915
+# ARMA(1,1) + ARCH(1)    8.512371e-05  0.0007961239
+# ARCH(10)               8.526672e-05  0.0001184614
+# ARMA(1,1) + GARCH(1,1) 8.514240e-05  0.0001183191
+
+error_logreturns <- cbind(logreturns - garch_rolling_fore_logreturns,
+                          logreturns - long_arch_rolling_fore_logreturns,
+                          logreturns - arch_rolling_fore_logreturns,
+                          logreturns - arma_rolling_fore_logreturns,
+                          logreturns - ar_rolling_fore_logreturns,
+                          logreturns - iid_rolling_fore_logreturns)
+names(error_logreturns) <- c("GARCH", "long-ARCH", "ARCH", "ARMA", "AR", "i.i.d.")
+plot(error_logreturns, col = c("red", "green", "magenta", "purple", "blue", "black"), lwd = c(1, 1, 1, 1, 1, 2),
+     main = "Error of rolling forecast for different models", legend.loc = "topleft")
+
+barplot(rbind(error_var[, "out-of-sample"], rolling_error_var[, "out-of-sample"]), 
+        col = c("darkblue", "darkgoldenrod"), 
+        legend = c("static forecast", "rolling forecast"), 
+        main = "Out-of-sample forecast error for different models", 
+        xlab = "method", ylab = "variance", beside = TRUE)
+
+
+# envelope from different methods
+# prepare training and test data
+logprices <- log(gold_prices)
+x <- diff(logprices)[-1]
+T <- nrow(x)
+T_trn <- round(0.7*T)
+T_tst <- T - T_trn
+x_trn <- x[1:T_trn]
+x_tst <- x[-c(1:T_trn)]
+
+# plot
+{ plot(x, main = "Returns", lwd = 1.5)
+  addEventLines(xts("training", index(x[T_trn])), srt=90, pos=2, lwd = 2, col = "blue") }
+
+#constant
+var_constant <- var(x_trn)  # or: mean(x_trn^2)
+plot(cbind(sqrt(var_constant), x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Constant envelope")
+
+# MA
+library(RcppRoll)  # fast rolling means
+lookback_var <- 20
+var_t <- roll_meanr(x_trn^2, n = lookback_var, fill = NA)
+plot(cbind(sqrt(var_t), x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Envelope based on simple rolling means of squares (lookback=20)")
+x_trn_std <- x_trn/sqrt(var_t)
+var_ma <- var(x_trn_std, na.rm = TRUE) * tail(var_t, 1)
+
+# exponentially weighted moving average (EWMA)
+library(forecast)
+fit_ets <- ets(x_trn^2, model = "ANN")
+std_t <- as.numeric(sqrt(fit_ets$fitted))
+plot(cbind(std_t, x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Envelope based on EWMA of squares")
+x_trn_std <- x_trn/std_t
+var_ewma <- var(x_trn_std, na.rm = TRUE) * tail(std_t, 1)^2
+
+# multiplicative ETS
+fit_ets <- ets(1e-6 + x_trn^2, model = "MNN")
+std_t <- as.numeric(sqrt(fit_ets$fitted))
+plot(cbind(std_t, x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Envelope based on ETS(M,N,N) of squares")
+x_trn_std <- x_trn/std_t
+var_ets_mnn <- var(x_trn_std, na.rm = TRUE) * tail(std_t, 1)^2
+
+# ARCH
+library(fGarch)
+arch_fit <- fGarch::garchFit(formula = ~ garch(5,0), x_trn, trace = FALSE)
+std_t <- arch_fit@sigma.t
+plot(cbind(std_t, x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Envelope based on ARCH(5)")
+var_arch <- tail(std_t, 1)^2
+
+# GARCH
+garch_fit <- fGarch::garchFit(formula = ~ garch(1,1), x_trn, trace = FALSE)
+std_t <- garch_fit@sigma.t
+plot(cbind(std_t, x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Envelope based on GARCH(1,1)")
+var_garch <- tail(std_t, 1)^2
+
+# stochastic volatility (SV)
+library(stochvol)
+res <- svsample(x_trn - mean(x_trn), priormu = c(0, 100), priornu = c(4))
+#summary(res, showlatent = FALSE)
+std_t <- res$summary$sd[, 1]
+plot(cbind(std_t, x_trn), col = c("red", "black"), lwd = c(2.5, 1.5),
+     main = "Envelope based on stochastic volatility")
+var_sv <- tail(std_t, 1)^2
+
+# comparison
+error_all <- c("MA"         = abs(var_ma      - var(x_tst)),
+               "EWMA"       = abs(var_ewma    - var(x_tst)),
+               "ETS(M,N,N)" = abs(var_ets_mnn - var(x_tst)),
+               "ARCH(5)"    = abs(var_arch    - var(x_tst)),
+               "GARCH(1,1)" = abs(var_garch   - var(x_tst)),
+               "SV"         = abs(var_sv      - var(x_tst)))
+print(error_all)
+# MA         EWMA   ETS(M,N,N)      ARCH(5)   GARCH(1,1) 
+# 9.501802e-05 6.244087e-05 7.384799e-05 6.011457e-05 6.286391e-05 
+# SV 
+# 8.457765e-05 
+barplot(error_all, main = "Error in estimation of out-of-sample variance", col = rainbow(6))
